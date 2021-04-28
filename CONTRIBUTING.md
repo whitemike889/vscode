@@ -1,3 +1,5 @@
+bar
+
 # Contributing to VS Code
 
 Welcome, and thank you for your interest in contributing to VS Code!
