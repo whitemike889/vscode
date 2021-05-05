@@ -3,14 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import Severity from 'vs/base/common/severity';
 import { URI } from 'vs/base/common/uri';
 import { localize } from 'vs/nls';
 import { ITerminalService } from 'vs/workbench/contrib/terminal/browser/terminal';
 import { IDecorationData, IDecorationsProvider } from 'vs/workbench/services/decorations/browser/decorations';
 import { Event, Emitter } from 'vs/base/common/event';
-import { listErrorForeground, listWarningForeground } from 'vs/platform/theme/common/colorRegistry';
-import { TERMINAL_DECORATIONS_SCHEME } from 'vs/workbench/contrib/terminal/common/terminal';
+import { Schemas } from 'vs/base/common/network';
+import { getColorForSeverity } from 'vs/workbench/contrib/terminal/browser/terminalStatusList';
 
 export interface ITerminalDecorationData {
 	tooltip: string,
@@ -25,6 +24,7 @@ export class TerminalDecorationsProvider implements IDecorationsProvider {
 	constructor(
 		@ITerminalService private readonly _terminalService: ITerminalService
 	) {
+		this._terminalService.onInstancePrimaryStatusChanged(e => this._onDidChange.fire([e.resource]));
 	}
 
 	get onDidChange(): Event<URI[]> {
@@ -32,30 +32,26 @@ export class TerminalDecorationsProvider implements IDecorationsProvider {
 	}
 
 	provideDecorations(resource: URI): IDecorationData | undefined {
-		if (resource.scheme !== TERMINAL_DECORATIONS_SCHEME || !parseInt(resource.path)) {
+		if (resource.scheme !== Schemas.vscodeTerminal) {
 			return undefined;
 		}
 
-		const instance = this._terminalService.getInstanceFromId(parseInt(resource.path));
-		if (!instance?.statusList?.primary?.icon) {
+		const instanceId = parseInt(resource.fragment);
+		if (!instanceId) {
+			return undefined;
+		}
+
+		const instance = this._terminalService.getInstanceFromId(parseInt(resource.fragment));
+		const primaryStatus = instance?.statusList?.primary;
+		if (!primaryStatus?.icon) {
 			return undefined;
 		}
 
 		return {
-			color: this.getColorForSeverity(instance.statusList.primary.severity),
-			letter: instance.statusList.primary.icon
+			color: getColorForSeverity(primaryStatus.severity),
+			letter: primaryStatus.icon,
+			tooltip: primaryStatus.tooltip
 		};
-	}
-
-	getColorForSeverity(severity: Severity): string {
-		switch (severity) {
-			case Severity.Error:
-				return listErrorForeground;
-			case Severity.Warning:
-				return listWarningForeground;
-			default:
-				return '';
-		}
 	}
 
 	dispose(): void {

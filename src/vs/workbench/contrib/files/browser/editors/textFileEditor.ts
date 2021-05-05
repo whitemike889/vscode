@@ -28,7 +28,7 @@ import { IEditorService } from 'vs/workbench/services/editor/common/editorServic
 import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { createErrorWithActions } from 'vs/base/common/errors';
-import { EditorActivation, IEditorOptions } from 'vs/platform/editor/common/editor';
+import { EditorActivation, EditorOverride, IEditorOptions } from 'vs/platform/editor/common/editor';
 import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentity';
 import { IExplorerService } from 'vs/workbench/contrib/files/browser/files';
 
@@ -104,7 +104,7 @@ export class TextFileEditor extends BaseTextEditor {
 		return this._input as FileEditorInput;
 	}
 
-	async override setInput(input: FileEditorInput, options: EditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+	override async setInput(input: FileEditorInput, options: EditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 
 		// Update/clear view settings if input changes
 		this.doSaveOrClearTextEditorViewState(this.input);
@@ -203,7 +203,7 @@ export class TextFileEditor extends BaseTextEditor {
 		// because we are triggering another openEditor() call
 		// and do not control the initial intent that resulted
 		// in us now opening as binary.
-		const preservingOptions: IEditorOptions = { activation: EditorActivation.PRESERVE };
+		const preservingOptions: IEditorOptions = { activation: EditorActivation.PRESERVE, override: EditorOverride.DISABLED };
 		if (options) {
 			options.overwrite(preservingOptions);
 		} else {

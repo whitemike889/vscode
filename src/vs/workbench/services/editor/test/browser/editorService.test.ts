@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { EditorActivation } from 'vs/platform/editor/common/editor';
+import { EditorActivation, EditorOverride } from 'vs/platform/editor/common/editor';
 import { URI } from 'vs/base/common/uri';
 import { Event } from 'vs/base/common/event';
 import { EditorPane } from 'vs/workbench/browser/parts/editor/editorPane';
@@ -30,6 +30,7 @@ import { DiffEditorInput } from 'vs/workbench/common/editor/diffEditorInput';
 import { TestStorageService } from 'vs/workbench/test/common/workbenchTestServices';
 import { isLinux } from 'vs/base/common/platform';
 import { MockScopableContextKeyService } from 'vs/platform/keybinding/test/common/mockKeybindingService';
+import { ContributedEditorPriority } from 'vs/workbench/services/editor/common/editorOverrideService';
 
 suite('EditorService', () => {
 
@@ -1026,7 +1027,108 @@ suite('EditorService', () => {
 		handler.dispose();
 	});
 
-	test('findEditors', async () => {
+	test('editorOverrideService - openEditor', async function () {
+		const [, service, accessor] = await createEditorService();
+		const editorOverrideService = accessor.editorOverrideService;
+		let overrideCount = 0;
+		const registrationDisposable = editorOverrideService.registerContributionPoint(
+			'*.md',
+			{
+				id: 'TestEditor',
+				label: 'Test Editor',
+				detail: 'Test Editor Provider',
+				describes: () => false,
+				priority: ContributedEditorPriority.builtin
+			},
+			{},
+			(resource) => {
+				overrideCount++;
+				return ({ editor: service.createEditorInput({ resource }) });
+			},
+			diffEditor => ({ editor: diffEditor })
+		);
+		assert.strictEqual(overrideCount, 0);
+		const input1 = new TestFileEditorInput(URI.parse('file://test/path/resource1.txt'), TEST_EDITOR_INPUT_ID);
+		const input2 = new TestFileEditorInput(URI.parse('file://test/path/resource2.md'), TEST_EDITOR_INPUT_ID);
+		// Open editor input 1 and it shouln't trigger override as the glob doesn't match
+		await service.openEditor(input1);
+		assert.strictEqual(overrideCount, 0);
+		// Open editor input 2 and it should trigger override as the glob doesn match
+		await service.openEditor(input2);
+		assert.strictEqual(overrideCount, 1);
+		// Because we specify an override we shouldn't see it triggered even if it matches
+		await service.openEditor(input2, { override: 'default' });
+		assert.strictEqual(overrideCount, 1);
+
+		registrationDisposable.dispose();
+	});
+
+	test('editorOverrideService - openEditors', async function () {
+		const [, service, accessor] = await createEditorService();
+		const editorOverrideService = accessor.editorOverrideService;
+		let overrideCount = 0;
+		const registrationDisposable = editorOverrideService.registerContributionPoint(
+			'*.md',
+			{
+				id: 'TestEditor',
+				label: 'Test Editor',
+				detail: 'Test Editor Provider',
+				describes: () => false,
+				priority: ContributedEditorPriority.builtin
+			},
+			{},
+			(resource) => {
+				overrideCount++;
+				return ({ editor: service.createEditorInput({ resource }) });
+			},
+			diffEditor => ({ editor: diffEditor })
+		);
+		assert.strictEqual(overrideCount, 0);
+		const input1 = new TestFileEditorInput(URI.parse('file://test/path/resource1.txt'), TEST_EDITOR_INPUT_ID);
+		const input2 = new TestFileEditorInput(URI.parse('file://test/path/resource2.txt'), TEST_EDITOR_INPUT_ID);
+		const input3 = new TestFileEditorInput(URI.parse('file://test/path/resource3.md'), TEST_EDITOR_INPUT_ID);
+		const input4 = new TestFileEditorInput(URI.parse('file://test/path/resource4.md'), TEST_EDITOR_INPUT_ID);
+		// Open editor input 1 and it shouln't trigger override as the glob doesn't match
+		await service.openEditors([{ editor: input1 }, { editor: input2 }, { editor: input3 }, { editor: input4 }]);
+		assert.strictEqual(overrideCount, 2);
+
+		registrationDisposable.dispose();
+	});
+
+	test('editorOverrideService - replaceEditors', async function () {
+		const [part, service, accessor] = await createEditorService();
+		const editorOverrideService = accessor.editorOverrideService;
+		let overrideCount = 0;
+		const registrationDisposable = editorOverrideService.registerContributionPoint(
+			'*.md',
+			{
+				id: 'TestEditor',
+				label: 'Test Editor',
+				detail: 'Test Editor Provider',
+				describes: () => false,
+				priority: ContributedEditorPriority.builtin
+			},
+			{},
+			(resource) => {
+				overrideCount++;
+				return ({ editor: service.createEditorInput({ resource }) });
+			},
+			diffEditor => ({ editor: diffEditor })
+		);
+		assert.strictEqual(overrideCount, 0);
+		const input1 = new TestFileEditorInput(URI.parse('file://test/path/resource2.md'), TEST_EDITOR_INPUT_ID);
+		// Open editor input 1 and it shouldn't trigger because I've disabled the override logic
+		await service.openEditor(input1, { override: EditorOverride.DISABLED });
+		assert.strictEqual(overrideCount, 0);
+		await service.replaceEditors([{
+			editor: input1,
+			replacement: input1,
+		}], part.activeGroup);
+		assert.strictEqual(overrideCount, 1);
+		registrationDisposable.dispose();
+	});
+
+	test('findEditors (in group)', async () => {
 		const [part, service] = await createEditorService();
 
 		const input = new TestFileEditorInput(URI.parse('my://resource-openEditors'), TEST_EDITOR_INPUT_ID);
@@ -1038,35 +1140,111 @@ suite('EditorService', () => {
 
 		// Try using find editors for opened editors
 		{
-			const found = service.findEditors(input.resource, part.activeGroup);
-			assert.strictEqual(found.length, 1);
-			assert.strictEqual(found[0], input);
+			const found1 = service.findEditors(input.resource, part.activeGroup);
+			assert.strictEqual(found1.length, 1);
+			assert.strictEqual(found1[0], input);
+
+			const found2 = service.findEditors(input, part.activeGroup);
+			assert.strictEqual(found2, input);
 		}
 		{
-			const found = service.findEditors(otherInput.resource, part.activeGroup);
-			assert.strictEqual(found.length, 1);
-			assert.strictEqual(found[0], otherInput);
+			const found1 = service.findEditors(otherInput.resource, part.activeGroup);
+			assert.strictEqual(found1.length, 1);
+			assert.strictEqual(found1[0], otherInput);
+
+			const found2 = service.findEditors(otherInput, part.activeGroup);
+			assert.strictEqual(found2, otherInput);
 		}
 
 		// Make sure we don't find non-opened editors
 		{
-			const found = service.findEditors(URI.parse('my://no-such-resource'), part.activeGroup);
-			assert.strictEqual(found.length, 0);
+			const found1 = service.findEditors(URI.parse('my://no-such-resource'), part.activeGroup);
+			assert.strictEqual(found1.length, 0);
+
+			const found2 = service.findEditors({ resource: URI.parse('my://no-such-resource'), typeId: '' }, part.activeGroup);
+			assert.strictEqual(found2, undefined);
 		}
 
 		// Make sure we don't find editors across groups
 		{
 			const newEditor = await service.openEditor(new TestFileEditorInput(URI.parse('my://other-group-resource'), TEST_EDITOR_INPUT_ID), { pinned: true, preserveFocus: true }, SIDE_GROUP);
 
-			const found = service.findEditors(input.resource, newEditor!.group!.id);
-			assert.strictEqual(found.length, 0);
+			const found1 = service.findEditors(input.resource, newEditor!.group!.id);
+			assert.strictEqual(found1.length, 0);
+
+			const found2 = service.findEditors(input, newEditor!.group!.id);
+			assert.strictEqual(found2, undefined);
 		}
 
 		// Check we don't find editors after closing them
 		await part.activeGroup.closeAllEditors();
 		{
-			const found = service.findEditors(input.resource, part.activeGroup);
-			assert.strictEqual(found.length, 0);
+			const found1 = service.findEditors(input.resource, part.activeGroup);
+			assert.strictEqual(found1.length, 0);
+
+			const found2 = service.findEditors(input, part.activeGroup);
+			assert.strictEqual(found2, undefined);
+		}
+	});
+
+	test('findEditors (across groups)', async () => {
+		const [part, service] = await createEditorService();
+
+		const rootGroup = part.activeGroup;
+
+		const input = new TestFileEditorInput(URI.parse('my://resource-openEditors'), TEST_EDITOR_INPUT_ID);
+		const otherInput = new TestFileEditorInput(URI.parse('my://resource2-openEditors'), TEST_EDITOR_INPUT_ID);
+
+		// Open editors
+		await service.openEditors([{ editor: input }, { editor: otherInput }]);
+		const sideEditor = await service.openEditor(input, { pinned: true }, SIDE_GROUP);
+
+		// Try using find editors for opened editors
+		{
+			const found1 = service.findEditors(input.resource);
+			assert.strictEqual(found1.length, 2);
+			assert.strictEqual(found1[0].editor, input);
+			assert.strictEqual(found1[0].groupId, sideEditor?.group?.id);
+			assert.strictEqual(found1[1].editor, input);
+			assert.strictEqual(found1[1].groupId, rootGroup.id);
+
+			const found2 = service.findEditors(input);
+			assert.strictEqual(found2.length, 2);
+			assert.strictEqual(found2[0].editor, input);
+			assert.strictEqual(found2[0].groupId, sideEditor?.group?.id);
+			assert.strictEqual(found2[1].editor, input);
+			assert.strictEqual(found2[1].groupId, rootGroup.id);
+		}
+		{
+			const found1 = service.findEditors(otherInput.resource);
+			assert.strictEqual(found1.length, 1);
+			assert.strictEqual(found1[0].editor, otherInput);
+			assert.strictEqual(found1[0].groupId, rootGroup.id);
+
+			const found2 = service.findEditors(otherInput);
+			assert.strictEqual(found2.length, 1);
+			assert.strictEqual(found2[0].editor, otherInput);
+			assert.strictEqual(found2[0].groupId, rootGroup.id);
+		}
+
+		// Make sure we don't find non-opened editors
+		{
+			const found1 = service.findEditors(URI.parse('my://no-such-resource'));
+			assert.strictEqual(found1.length, 0);
+
+			const found2 = service.findEditors({ resource: URI.parse('my://no-such-resource'), typeId: '' });
+			assert.strictEqual(found2.length, 0);
+		}
+
+		// Check we don't find editors after closing them
+		await rootGroup.closeAllEditors();
+		await sideEditor?.group?.closeAllEditors();
+		{
+			const found1 = service.findEditors(input.resource);
+			assert.strictEqual(found1.length, 0);
+
+			const found2 = service.findEditors(input);
+			assert.strictEqual(found2.length, 0);
 		}
 	});
 });

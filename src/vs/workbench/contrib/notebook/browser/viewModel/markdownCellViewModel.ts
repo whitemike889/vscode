@@ -8,7 +8,7 @@ import * as UUID from 'vs/base/common/uuid';
 import * as editorCommon from 'vs/editor/common/editorCommon';
 import * as nls from 'vs/nls';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { BOTTOM_CELL_TOOLBAR_GAP, BOTTOM_CELL_TOOLBAR_HEIGHT, CELL_MARGIN, CODE_CELL_LEFT_MARGIN, COLLAPSED_INDICATOR_HEIGHT, MARKDOWN_CELL_BOTTOM_MARGIN, MARKDOWN_CELL_TOP_MARGIN } from 'vs/workbench/contrib/notebook/browser/constants';
+import { BOTTOM_CELL_TOOLBAR_GAP, BOTTOM_CELL_TOOLBAR_HEIGHT, CODE_CELL_LEFT_MARGIN, COLLAPSED_INDICATOR_HEIGHT, MARKDOWN_CELL_BOTTOM_MARGIN, MARKDOWN_CELL_TOP_MARGIN, CELL_RIGHT_MARGIN } from 'vs/workbench/contrib/notebook/browser/constants';
 import { EditorFoldingStateDelegate } from 'vs/workbench/contrib/notebook/browser/contrib/fold/foldingModel';
 import { CellEditState, CellFindMatch, ICellOutputViewModel, ICellViewModel, MarkdownCellLayoutChangeEvent, MarkdownCellLayoutInfo, NotebookLayoutInfo } from 'vs/workbench/contrib/notebook/browser/notebookBrowser';
 import { MarkdownRenderer } from 'vs/editor/browser/core/markdownRenderer';
@@ -28,7 +28,7 @@ export class MarkdownCellViewModel extends BaseCellViewModel implements ICellVie
 	}
 
 	set renderedMarkdownHeight(newHeight: number) {
-		if (this.editState === CellEditState.Preview) {
+		if (this.getEditState() === CellEditState.Preview) {
 			const newTotalHeight = newHeight + BOTTOM_CELL_TOOLBAR_GAP;
 			this.totalHeight = newTotalHeight;
 		}
@@ -94,6 +94,9 @@ export class MarkdownCellViewModel extends BaseCellViewModel implements ICellVie
 		return this.model.getHashValue();
 	}
 
+	private readonly _onDidHideInput = new Emitter<void>();
+	readonly onDidHideInput = this._onDidHideInput.event;
+
 	constructor(
 		viewType: string,
 		model: NotebookCellTextModel,
@@ -117,6 +120,12 @@ export class MarkdownCellViewModel extends BaseCellViewModel implements ICellVie
 		this._register(this.onDidChangeState(e => {
 			eventDispatcher.emit([new NotebookCellStateChangedEvent(e, this)]);
 		}));
+
+		this._register(model.onDidChangeMetadata(e => {
+			if (this.metadata?.inputCollapsed) {
+				this._onDidHideInput.fire();
+			}
+		}));
 	}
 
 	/**
@@ -136,7 +145,7 @@ export class MarkdownCellViewModel extends BaseCellViewModel implements ICellVie
 	}
 
 	private computeEditorWidth(outerWidth: number) {
-		return outerWidth - (CELL_MARGIN * 2) - CODE_CELL_LEFT_MARGIN;
+		return outerWidth - CODE_CELL_LEFT_MARGIN - CELL_RIGHT_MARGIN;
 	}
 
 	layoutChange(state: MarkdownCellLayoutChangeEvent) {

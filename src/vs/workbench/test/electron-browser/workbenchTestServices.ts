@@ -44,6 +44,7 @@ import { IEnvironmentService, INativeEnvironmentService } from 'vs/platform/envi
 import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { getUserDataPath } from 'vs/platform/environment/node/userDataPath';
 import product from 'vs/platform/product/common/product';
+import { IElevatedFileService } from 'vs/workbench/services/files/common/elevatedFileService';
 
 const args = parseArgs(process.argv, OPTIONS);
 
@@ -90,7 +91,7 @@ export class TestTextFileService extends NativeTextFileService {
 		@ILogService logService: ILogService,
 		@IUriIdentityService uriIdentityService: IUriIdentityService,
 		@IModeService modeService: IModeService,
-		@INativeHostService nativeHostService: INativeHostService
+		@IElevatedFileService elevatedFileService: IElevatedFileService
 	) {
 		super(
 			fileService,
@@ -109,7 +110,7 @@ export class TestTextFileService extends NativeTextFileService {
 			workingCopyFileService,
 			uriIdentityService,
 			modeService,
-			nativeHostService,
+			elevatedFileService,
 			logService
 		);
 	}
@@ -215,7 +216,7 @@ export class TestNativeHostService implements INativeHostService {
 	async setDocumentEdited(edited: boolean): Promise<void> { }
 	async openExternal(url: string): Promise<boolean> { return false; }
 	async updateTouchBar(): Promise<void> { }
-	async moveItemToTrash(): Promise<boolean> { return false; }
+	async moveItemToTrash(): Promise<void> { }
 	async newWindowTab(): Promise<void> { }
 	async showPreviousWindowTab(): Promise<void> { }
 	async showNextWindowTab(): Promise<void> { }

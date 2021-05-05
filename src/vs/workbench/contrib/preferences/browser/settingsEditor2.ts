@@ -54,6 +54,7 @@ import { IUserDataSyncWorkbenchService } from 'vs/workbench/services/userDataSyn
 import { preferencesClearInputIcon } from 'vs/workbench/contrib/preferences/browser/preferencesIcons';
 import { IWorkspaceTrustManagementService } from 'vs/platform/workspace/common/workspaceTrust';
 import { IWorkbenchConfigurationService } from 'vs/workbench/services/configuration/common/configuration';
+import { isIPad } from 'vs/base/browser/browser';
 
 export const enum SettingsFocusContext {
 	Search,
@@ -216,7 +217,7 @@ export class SettingsEditor2 extends EditorPane {
 			this.renderTree();
 		}));
 
-		this._register(configurationService.onDidChangeUntrustdSettings(e => {
+		this._register(configurationService.onDidChangeRestrictedSettings(e => {
 			if (e.default.length) {
 				this.updateElementsByKey([...e.default]);
 			}
@@ -269,7 +270,7 @@ export class SettingsEditor2 extends EditorPane {
 		this.updateStyles();
 	}
 
-	async override setInput(input: SettingsEditor2Input, options: SettingsEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+	override async setInput(input: SettingsEditor2Input, options: SettingsEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		this.inSettingsEditorContextKey.set(true);
 		await super.setInput(input, options, context, token);
 		await timeout(0); // Force setInput to be async
@@ -338,7 +339,8 @@ export class SettingsEditor2 extends EditorPane {
 	}
 
 	private _setOptions(options: SettingsEditorOptions): void {
-		if (options.focusSearch) {
+		if (options.focusSearch && !isIPad) {
+			// isIPad - #122044
 			this.focusSearch();
 		}
 
@@ -378,7 +380,10 @@ export class SettingsEditor2 extends EditorPane {
 
 	override focus(): void {
 		if (this._currentFocusContext === SettingsFocusContext.Search) {
-			this.focusSearch();
+			if (!isIPad) {
+				// #122044
+				this.focusSearch();
+			}
 		} else if (this._currentFocusContext === SettingsFocusContext.SettingControl) {
 			const element = this.focusedSettingDOMElement;
 			if (element) {
@@ -927,7 +932,6 @@ export class SettingsEditor2 extends EditorPane {
 
 		const data = {
 			key: props.key,
-			query: props.query,
 			groupId,
 			nlpIndex,
 			displayIndex,
@@ -939,7 +943,6 @@ export class SettingsEditor2 extends EditorPane {
 		/* __GDPR__
 			"settingsEditor.settingModified" : {
 				"key" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" },
-				"query" : { "classification": "CustomerContent", "purpose": "FeatureInsight" },
 				"groupId" : { "classification": "SystemMetaData", "purpose": "FeatureInsight" },
 				"nlpIndex" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
 				"displayIndex" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
@@ -1262,7 +1265,6 @@ export class SettingsEditor2 extends EditorPane {
 		const requestCount = nlpMetadata && nlpMetadata.requestCount;
 
 		const data = {
-			query,
 			durations,
 			counts,
 			requestCount
@@ -1270,7 +1272,6 @@ export class SettingsEditor2 extends EditorPane {
 
 		/* __GDPR__
 			"settingsEditor.filter" : {
-				"query": { "classification": "CustomerContent", "purpose": "FeatureInsight" },
 				"durations.nlpResult" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
 				"counts.nlpResult" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
 				"counts.filterResult" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },

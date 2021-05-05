@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { isWindows, isMacintosh } from 'vs/base/common/platform';
-import { ipcMain, nativeTheme } from 'electron';
-import { IStateService } from 'vs/platform/state/node/state';
+import { BrowserWindow, ipcMain, nativeTheme } from 'electron';
+import { IStateMainService } from 'vs/platform/state/electron-main/state';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 
 const DEFAULT_BG_LIGHT = '#FFFFFF';
@@ -23,22 +23,37 @@ export interface IThemeMainService {
 	getBackgroundColor(): string;
 }
 
+interface ThemeData {
+	baseTheme: string;
+	background: string;
+}
+
 export class ThemeMainService implements IThemeMainService {
 
 	declare readonly _serviceBrand: undefined;
 
-	constructor(@IStateService private stateService: IStateService) {
+	constructor(@IStateMainService private stateMainService: IStateMainService) {
 		ipcMain.on('vscode:changeColorTheme', (e: Event, windowId: number, broadcast: string) => {
 			// Theme changes
 			if (typeof broadcast === 'string') {
-				this.storeBackgroundColor(JSON.parse(broadcast));
+				const themeData = JSON.parse(broadcast) as ThemeData;
+				this.storeBackgroundColor(themeData);
+				this.updateBackgroundColor(windowId, themeData);
 			}
 		});
 	}
 
-	private storeBackgroundColor(data: { baseTheme: string, background: string }): void {
-		this.stateService.setItem(THEME_STORAGE_KEY, data.baseTheme);
-		this.stateService.setItem(THEME_BG_STORAGE_KEY, data.background);
+	private storeBackgroundColor(data: ThemeData): void {
+		this.stateMainService.setItem(THEME_STORAGE_KEY, data.baseTheme);
+		this.stateMainService.setItem(THEME_BG_STORAGE_KEY, data.background);
+	}
+
+	private updateBackgroundColor(windowId: number, data: ThemeData): void {
+		BrowserWindow.getAllWindows().forEach(window => {
+			if (window.id === windowId) {
+				window.setBackgroundColor(data.background);
+			}
+		});
 	}
 
 	getBackgroundColor(): string {
@@ -46,13 +61,13 @@ export class ThemeMainService implements IThemeMainService {
 			return DEFAULT_BG_HC_BLACK;
 		}
 
-		let background = this.stateService.getItem<string | null>(THEME_BG_STORAGE_KEY, null);
+		let background = this.stateMainService.getItem<string | null>(THEME_BG_STORAGE_KEY, null);
 		if (!background) {
 			let baseTheme: string;
 			if ((isWindows || isMacintosh) && nativeTheme.shouldUseInvertedColorScheme) {
 				baseTheme = 'hc-black';
 			} else {
-				baseTheme = this.stateService.getItem<string>(THEME_STORAGE_KEY, 'vs-dark').split(' ')[0];
+				baseTheme = this.stateMainService.getItem<string>(THEME_STORAGE_KEY, 'vs-dark').split(' ')[0];
 			}
 
 			background = (baseTheme === 'hc-black') ? DEFAULT_BG_HC_BLACK : (baseTheme === 'vs' ? DEFAULT_BG_LIGHT : DEFAULT_BG_DARK);

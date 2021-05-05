@@ -96,7 +96,8 @@ export interface IOffProcessTerminalService {
 	attachToProcess(id: number): Promise<ITerminalChildProcess | undefined>;
 	listProcesses(): Promise<IProcessDetails[]>;
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;
-	getShellEnvironment(): Promise<IProcessEnvironment>;
+	getWslPath(original: string): Promise<string>;
+	getEnvironment(): Promise<IProcessEnvironment>;
 	setTerminalLayoutInfo(layoutInfo?: ITerminalsLayoutInfoById): Promise<void>;
 	getTerminalLayoutInfo(): Promise<ITerminalsLayoutInfo | undefined>;
 	reduceConnectionGraceTime(): Promise<void>;
@@ -161,7 +162,8 @@ export interface IPtyService {
 	orphanQuestionReply(id: number): Promise<void>;
 
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;
-	getShellEnvironment(): Promise<IProcessEnvironment>;
+	getEnvironment(): Promise<IProcessEnvironment>;
+	getWslPath(original: string): Promise<string>;
 	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
 	getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined>;
 	reduceConnectionGraceTime(): Promise<void>;
@@ -200,6 +202,11 @@ export interface IShellLaunchConfig {
 	 * The name of the terminal, if this is not set the name of the process will be used.
 	 */
 	name?: string;
+
+	/**
+	 * An string to follow the name of the terminal with, indicating a special kind of terminal
+	 */
+	description?: string;
 
 	/**
 	 * The shell executable (bash, cmd, etc.).
@@ -434,3 +441,5 @@ export interface ITerminalDimensionsOverride extends Readonly<ITerminalDimension
 	 */
 	forceExactSize?: boolean;
 }
+
+export type SafeConfigProvider = <T>(key: string) => T | undefined;

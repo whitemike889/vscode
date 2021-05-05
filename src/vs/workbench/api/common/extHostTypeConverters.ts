@@ -28,6 +28,7 @@ import { ExtHostDocumentsAndEditors } from 'vs/workbench/api/common/extHostDocum
 import { ExtHostNotebookController } from 'vs/workbench/api/common/extHostNotebook';
 import { EditorGroupColumn, SaveReason } from 'vs/workbench/common/editor';
 import * as notebooks from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { ICellRange } from 'vs/workbench/contrib/notebook/common/notebookRange';
 import * as search from 'vs/workbench/contrib/search/common/search';
 import { ISerializedTestResults, ITestItem, ITestMessage, SerializedTestResultItem } from 'vs/workbench/contrib/testing/common/testCollection';
 import { ACTIVE_GROUP, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
@@ -544,7 +545,7 @@ export namespace WorkspaceEdit {
 						resource: entry.uri,
 						edit: entry.edit,
 						notebookMetadata: entry.notebookMetadata,
-						notebookVersionId: extHostNotebooks?.lookupNotebookDocument(entry.uri)?.notebookDocument.version
+						notebookVersionId: extHostNotebooks?.lookupNotebookDocument(entry.uri)?.apiNotebook.version
 					});
 
 				} else if (entry._type === types.FileEditType.CellOutput) {
@@ -579,7 +580,7 @@ export namespace WorkspaceEdit {
 						_type: extHostProtocol.WorkspaceEditType.Cell,
 						metadata: entry.metadata,
 						resource: entry.uri,
-						notebookVersionId: extHostNotebooks?.lookupNotebookDocument(entry.uri)?.notebookDocument.version,
+						notebookVersionId: extHostNotebooks?.lookupNotebookDocument(entry.uri)?.apiNotebook.version,
 						edit: {
 							editType: notebooks.CellEditType.Replace,
 							index: entry.index,
@@ -1129,37 +1130,35 @@ export namespace SignatureHelp {
 	}
 }
 
-export namespace InlineHint {
+export namespace InlayHint {
 
-	export function from(hint: vscode.InlineHint): modes.InlineHint {
+	export function from(hint: vscode.InlayHint): modes.InlayHint {
 		return {
 			text: hint.text,
-			range: Range.from(hint.range),
-			kind: InlineHintKind.from(hint.kind ?? types.InlineHintKind.Other),
-			description: hint.description && MarkdownString.fromStrict(hint.description),
+			position: Position.from(hint.position),
+			kind: InlayHintKind.from(hint.kind ?? types.InlayHintKind.Other),
 			whitespaceBefore: hint.whitespaceBefore,
 			whitespaceAfter: hint.whitespaceAfter
 		};
 	}
 
-	export function to(hint: modes.InlineHint): vscode.InlineHint {
-		const res = new types.InlineHint(
+	export function to(hint: modes.InlayHint): vscode.InlayHint {
+		const res = new types.InlayHint(
 			hint.text,
-			Range.to(hint.range),
-			InlineHintKind.to(hint.kind)
+			Position.to(hint.position),
+			InlayHintKind.to(hint.kind)
 		);
 		res.whitespaceAfter = hint.whitespaceAfter;
 		res.whitespaceBefore = hint.whitespaceBefore;
-		res.description = htmlContent.isMarkdownString(hint.description) ? MarkdownString.to(hint.description) : hint.description;
 		return res;
 	}
 }
 
-export namespace InlineHintKind {
-	export function from(kind: vscode.InlineHintKind): modes.InlineHintKind {
+export namespace InlayHintKind {
+	export function from(kind: vscode.InlayHintKind): modes.InlayHintKind {
 		return kind;
 	}
-	export function to(kind: modes.InlineHintKind): vscode.InlineHintKind {
+	export function to(kind: modes.InlayHintKind): vscode.InlayHintKind {
 		return kind;
 	}
 }
@@ -1407,11 +1406,11 @@ export namespace LanguageSelector {
 
 export namespace NotebookRange {
 
-	export function from(range: vscode.NotebookRange): notebooks.ICellRange {
+	export function from(range: vscode.NotebookRange): ICellRange {
 		return { start: range.start, end: range.end };
 	}
 
-	export function to(range: notebooks.ICellRange): types.NotebookRange {
+	export function to(range: ICellRange): types.NotebookRange {
 		return new types.NotebookRange(range.start, range.end);
 	}
 }
@@ -1644,7 +1643,7 @@ export namespace NotebookDocumentContentOptions {
 		return {
 			transientOutputs: options?.transientOutputs ?? false,
 			transientCellMetadata: {
-				...(options?.transientCellMetadata ?? options?.transientMetadata),
+				...options?.transientCellMetadata,
 				executionOrder: true,
 				runState: true,
 				runStartTime: true,
@@ -1661,16 +1660,14 @@ export namespace NotebookKernelPreload {
 	export function from(preload: vscode.NotebookKernelPreload): { uri: UriComponents; provides: string[] } {
 		return {
 			uri: preload.uri,
+			// todo@connor4312: the conditional here can be removed after a migration period
 			provides: typeof preload.provides === 'string'
 				? [preload.provides]
 				: preload.provides ?? []
 		};
 	}
 	export function to(preload: { uri: UriComponents; provides: string[] }): vscode.NotebookKernelPreload {
-		return {
-			uri: URI.revive(preload.uri),
-			provides: preload.provides
-		};
+		return new types.NotebookKernelPreload(URI.revive(preload.uri), preload.provides);
 	}
 }
 
@@ -1702,10 +1699,11 @@ export namespace TestItem {
 			extId: item.id,
 			label: item.label,
 			uri: item.uri,
-			range: Range.from(item.range),
+			range: Range.from(item.range) || null,
 			debuggable: item.debuggable ?? false,
-			description: item.description,
+			description: item.description || null,
 			runnable: item.runnable ?? true,
+			error: item.error ? (MarkdownString.fromStrict(item.error) || null) : null,
 		};
 	}
 
@@ -1714,9 +1712,10 @@ export namespace TestItem {
 			extId: item.id,
 			label: item.label,
 			uri: item.uri,
-			range: Range.from(item.range),
+			range: Range.from(item.range) || null,
 			debuggable: false,
-			description: item.description,
+			description: item.description || null,
+			error: null,
 			runnable: true,
 		};
 	}
@@ -1726,22 +1725,22 @@ export namespace TestItem {
 			id: item.extId,
 			label: item.label,
 			uri: URI.revive(item.uri),
-			range: Range.to(item.range),
+			range: Range.to(item.range || undefined),
 			addChild: () => undefined,
 			dispose: () => undefined,
 			status: types.TestItemStatus.Pending,
 			data: undefined as never,
 			debuggable: item.debuggable,
-			description: item.description,
+			description: item.description || undefined,
 			runnable: item.runnable,
 		};
 	}
 
 	export function to(item: ITestItem): types.TestItemImpl {
 		const testItem = new types.TestItemImpl(item.extId, item.label, URI.revive(item.uri), undefined);
-		testItem.range = Range.to(item.range);
+		testItem.range = Range.to(item.range || undefined);
 		testItem.debuggable = item.debuggable;
-		testItem.description = item.description;
+		testItem.description = item.description || undefined;
 		testItem.runnable = item.runnable;
 		return testItem;
 	}

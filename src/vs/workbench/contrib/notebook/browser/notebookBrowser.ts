@@ -16,13 +16,13 @@ import { ICodeEditor } from 'vs/editor/browser/editorBrowser';
 import { FontInfo } from 'vs/editor/common/config/fontInfo';
 import { IPosition } from 'vs/editor/common/core/position';
 import { Range } from 'vs/editor/common/core/range';
-import { FindMatch, IReadonlyTextBuffer, ITextModel } from 'vs/editor/common/model';
+import { FindMatch, IModelDeltaDecoration, IReadonlyTextBuffer, ITextModel } from 'vs/editor/common/model';
 import { ContextKeyExpr, RawContextKey, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { OutputRenderer } from 'vs/workbench/contrib/notebook/browser/view/output/outputRenderer';
-import { RunStateRenderer, TimerRenderer } from 'vs/workbench/contrib/notebook/browser/view/renderers/cellRenderer';
 import { CellViewModel, IModelDecorationsChangeAccessor, NotebookViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/notebookViewModel';
 import { NotebookCellTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookCellTextModel';
-import { CellKind, NotebookCellMetadata, NotebookDocumentMetadata, INotebookKernel, ICellRange, IOrderedMimeType, INotebookRendererInfo, ICellOutput, IOutputItemDto, cellRangesToIndexes, reduceRanges, INotebookCellStatusBarItem } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { CellKind, NotebookCellMetadata, INotebookKernel, IOrderedMimeType, INotebookRendererInfo, ICellOutput, IOutputItemDto, INotebookCellStatusBarItem } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { ICellRange, cellRangesToIndexes, reduceRanges } from 'vs/workbench/contrib/notebook/common/notebookRange';
 import { Webview } from 'vs/workbench/contrib/webview/browser/webview';
 import { NotebookTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookTextModel';
 import { IMenu } from 'vs/platform/actions/common/actions';
@@ -64,6 +64,7 @@ export const NOTEBOOK_CELL_INPUT_COLLAPSED = new RawContextKey<boolean>('noteboo
 export const NOTEBOOK_CELL_OUTPUT_COLLAPSED = new RawContextKey<boolean>('notebookCellOutputIsCollapsed', false); // bool
 // Kernels
 export const NOTEBOOK_KERNEL_COUNT = new RawContextKey<number>('notebookKernelCount', 0);
+export const NOTEBOOK_KERNEL_SELECTED = new RawContextKey<boolean>('notebookKernelSelected', false);
 export const NOTEBOOK_INTERRUPTIBLE_KERNEL = new RawContextKey<boolean>('notebookInterruptibleKernel', false);
 
 //#endregion
@@ -247,12 +248,13 @@ export interface ICellViewModel extends IGenericCellViewModel {
 	readonly layoutInfo: { totalHeight: number; };
 	readonly onDidChangeLayout: Event<{ totalHeight?: boolean | number; outerWidth?: number; }>;
 	readonly onDidChangeCellStatusBarItems: Event<void>;
+	readonly editStateSource: string;
+	readonly editorAttached: boolean;
 	dragging: boolean;
 	handle: number;
 	uri: URI;
 	language: string;
 	cellKind: CellKind;
-	editState: CellEditState;
 	lineNumbers: 'on' | 'off' | 'inherit';
 	focusMode: CellFocusMode;
 	outputIsHovered: boolean;
@@ -263,10 +265,13 @@ export interface ICellViewModel extends IGenericCellViewModel {
 	textModel: ITextModel | undefined;
 	hasModel(): this is IEditableCellViewModel;
 	resolveTextModel(): Promise<ITextModel>;
-	getEvaluatedMetadata(documentMetadata: NotebookDocumentMetadata | undefined): NotebookCellMetadata;
 	getSelectionsStartPosition(): IPosition[] | undefined;
 	getCellDecorations(): INotebookCellDecorationOptions[];
 	getCellStatusBarItems(): INotebookCellStatusBarItem[];
+	getEditState(): CellEditState;
+	updateEditState(state: CellEditState, source: string): void;
+	deltaModelDecorations(oldDecorations: string[], newDecorations: IModelDeltaDecoration[]): string[];
+	getCellDecorationRange(id: string): Range | null;
 }
 
 export interface IEditableCellViewModel extends ICellViewModel {
@@ -343,6 +348,7 @@ export interface INotebookEditorCreationOptions {
 
 export interface IActiveNotebookEditor extends INotebookEditor {
 	viewModel: NotebookViewModel;
+	textModel: NotebookTextModel;
 	getFocus(): ICellRange;
 }
 
@@ -497,7 +503,7 @@ export interface INotebookEditor extends ICommonNotebookEditor {
 	/**
 	 * Send message to the webview for outputs.
 	 */
-	postMessage(forRendererId: string | undefined, message: any): void;
+	postMessage(message: any): void;
 
 	/**
 	 * Remove class name on the notebook editor root DOM node.
@@ -730,7 +736,6 @@ export interface MarkdownCellRenderTemplate extends BaseCellRenderTemplate {
 }
 
 export interface CodeCellRenderTemplate extends BaseCellRenderTemplate {
-	cellRunState: RunStateRenderer;
 	runToolbar: ToolBar;
 	runButtonContainer: HTMLElement;
 	executionOrderLabel: HTMLElement;
@@ -739,7 +744,6 @@ export interface CodeCellRenderTemplate extends BaseCellRenderTemplate {
 	focusSinkElement: HTMLElement;
 	editor: ICodeEditor;
 	progressBar: ProgressBar;
-	timer: TimerRenderer;
 	focusIndicatorRight: HTMLElement;
 	focusIndicatorBottom: HTMLElement;
 	dragHandle: HTMLElement;
@@ -767,6 +771,12 @@ export interface IOutputTransformContribution {
 
 export interface CellFindMatch {
 	cell: CellViewModel;
+	matches: FindMatch[];
+}
+
+export interface CellFindMatchWithIndex {
+	cell: CellViewModel;
+	index: number;
 	matches: FindMatch[];
 }
 

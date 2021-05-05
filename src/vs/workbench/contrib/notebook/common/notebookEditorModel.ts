@@ -6,9 +6,9 @@
 import * as nls from 'vs/nls';
 import { EditorModel, IEditorInput, IRevertOptions, ISaveOptions } from 'vs/workbench/common/editor';
 import { Emitter, Event } from 'vs/base/common/event';
-import { INotebookEditorModel, INotebookLoadOptions, IResolvedNotebookEditorModel, NotebookCellsChangeType, NotebookDataDto, NotebookDocumentBackupData } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { ICellDto2, INotebookEditorModel, INotebookLoadOptions, IResolvedNotebookEditorModel, NotebookCellsChangeType, NotebookDataDto, NotebookDocumentBackupData } from 'vs/workbench/contrib/notebook/common/notebookCommon';
 import { NotebookTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookTextModel';
-import { IMainNotebookController, INotebookSerializer, INotebookService, SimpleNotebookProviderInfo } from 'vs/workbench/contrib/notebook/common/notebookService';
+import { INotebookContentProvider, INotebookSerializer, INotebookService, SimpleNotebookProviderInfo } from 'vs/workbench/contrib/notebook/common/notebookService';
 import { URI } from 'vs/base/common/uri';
 import { IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 import { IWorkingCopy, IWorkingCopyBackup, WorkingCopyCapabilities, NO_TYPE_ID, IWorkingCopyIdentifier } from 'vs/workbench/services/workingCopy/common/workingCopy';
@@ -29,6 +29,7 @@ import { canceled } from 'vs/base/common/errors';
 import { NotebookEditorInput } from 'vs/workbench/contrib/notebook/common/notebookEditorInput';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IFileWorkingCopyManager, IFileWorkingCopySaveAsOptions } from 'vs/workbench/services/workingCopy/common/fileWorkingCopyManager';
+import { filter } from 'vs/base/common/objects';
 
 //#region --- complex content provider
 
@@ -52,7 +53,7 @@ export class ComplexNotebookEditorModel extends EditorModel implements INotebook
 	constructor(
 		readonly resource: URI,
 		readonly viewType: string,
-		private readonly _contentProvider: IMainNotebookController,
+		private readonly _contentProvider: INotebookContentProvider,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@INotebookService private readonly _notebookService: INotebookService,
 		@IWorkingCopyService private readonly _workingCopyService: IWorkingCopyService,
@@ -215,6 +216,10 @@ export class ComplexNotebookEditorModel extends EditorModel implements INotebook
 	private async _loadFromProvider(backupId: string | undefined): Promise<void> {
 
 		const untitledData = await this.getUntitledDocumentData(this.resource);
+		// If we're loading untitled file data we should ensure the model is dirty
+		if (untitledData) {
+			this._onDidChangeDirty.fire();
+		}
 		const data = await this._contentProvider.open(this.resource, backupId, untitledData, CancellationToken.None);
 
 		this._lastResolvedFileStat = await this._resolveStats(this.resource);
@@ -525,17 +530,22 @@ export class NotebookFileWorkingCopyModel implements IFileWorkingCopyModel {
 	async snapshot(token: CancellationToken): Promise<VSBufferReadableStream> {
 
 		const data: NotebookDataDto = {
-			metadata: this._notebookModel.metadata,
+			metadata: filter(this._notebookModel.metadata, key => !this._notebookSerializer.options.transientDocumentMetadata[key]),
 			cells: [],
 		};
 
 		for (const cell of this._notebookModel.cells) {
-			data.cells.push({
+			const cellData: ICellDto2 = {
 				cellKind: cell.cellKind,
 				language: cell.language,
 				source: cell.getValue(),
-				outputs: cell.outputs
-			});
+				outputs: []
+			};
+
+			cellData.outputs = !this._notebookSerializer.options.transientOutputs ? cell.outputs : [];
+			cellData.metadata = filter(cell.metadata, key => !this._notebookSerializer.options.transientCellMetadata[key]);
+
+			data.cells.push(cellData);
 		}
 
 		const bytes = await this._notebookSerializer.notebookToData(data);
@@ -566,12 +576,13 @@ export class NotebookFileWorkingCopyModel implements IFileWorkingCopyModel {
 export class NotebookFileWorkingCopyModelFactory implements IFileWorkingCopyModelFactory<NotebookFileWorkingCopyModel>{
 
 	constructor(
-		@INotebookService private readonly _notebookService: INotebookService
+		private readonly _viewType: string,
+		@INotebookService private readonly _notebookService: INotebookService,
 	) { }
 
 	async createModel(resource: URI, stream: VSBufferReadableStream, token: CancellationToken): Promise<NotebookFileWorkingCopyModel> {
 
-		const info = await this._notebookService.withNotebookDataProvider(resource);
+		const info = await this._notebookService.withNotebookDataProvider(resource, this._viewType);
 		if (!(info instanceof SimpleNotebookProviderInfo)) {
 			throw new Error('CANNOT open file notebook with this provider');
 		}

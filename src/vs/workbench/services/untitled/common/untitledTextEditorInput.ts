@@ -97,8 +97,8 @@ export class UntitledTextEditorInput extends AbstractTextResourceEditorInput imp
 		return this.model.getEncoding();
 	}
 
-	setEncoding(encoding: string, mode: EncodingMode /* ignored, we only have Encode */): void {
-		this.model.setEncoding(encoding);
+	setEncoding(encoding: string, mode: EncodingMode /* ignored, we only have Encode */): Promise<void> {
+		return this.model.setEncoding(encoding);
 	}
 
 	setMode(mode: string): void {
@@ -109,7 +109,7 @@ export class UntitledTextEditorInput extends AbstractTextResourceEditorInput imp
 		return this.model.getMode();
 	}
 
-	async override resolve(): Promise<IUntitledTextEditorModel> {
+	override async resolve(): Promise<IUntitledTextEditorModel> {
 		if (!this.modelResolve) {
 			this.modelResolve = this.model.resolve();
 		}

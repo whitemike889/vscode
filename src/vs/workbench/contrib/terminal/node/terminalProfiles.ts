@@ -7,27 +7,43 @@ import * as fs from 'fs';
 import { normalize, basename, delimiter } from 'vs/base/common/path';
 import { enumeratePowerShellInstallations } from 'vs/base/node/powershell';
 import { findExecutable, getWindowsBuildNumber } from 'vs/platform/terminal/node/terminalEnvironment';
-import { ITerminalConfiguration, ITerminalProfile, ITerminalProfileObject, ProfileSource } from 'vs/workbench/contrib/terminal/common/terminal';
+import { ITerminalProfile, ITerminalProfileObject, ProfileSource, TerminalSettingId } from 'vs/workbench/contrib/terminal/common/terminal';
 import * as cp from 'child_process';
 import { ExtHostVariableResolverService } from 'vs/workbench/api/common/extHostDebugService';
 import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 import { ILogService } from 'vs/platform/log/common/log';
 import * as pfs from 'vs/base/node/pfs';
-import { ITerminalEnvironment } from 'vs/platform/terminal/common/terminal';
+import { ITerminalEnvironment, SafeConfigProvider } from 'vs/platform/terminal/common/terminal';
 import { Codicon } from 'vs/base/common/codicons';
 import { isMacintosh, isWindows } from 'vs/base/common/platform';
 
 let profileSources: Map<string, IPotentialTerminalProfile> | undefined;
 
-export function detectAvailableProfiles(configuredProfilesOnly: boolean, fsProvider?: IFsProvider, logService?: ILogService, config?: ITerminalConfiguration, variableResolver?: ExtHostVariableResolverService, workspaceFolder?: IWorkspaceFolder, testPaths?: string[]): Promise<ITerminalProfile[]> {
+export function detectAvailableProfiles(configuredProfilesOnly: boolean, safeConfigProvider: SafeConfigProvider, fsProvider?: IFsProvider, logService?: ILogService, variableResolver?: ExtHostVariableResolverService, workspaceFolder?: IWorkspaceFolder, testPaths?: string[]): Promise<ITerminalProfile[]> {
 	fsProvider = fsProvider || {
 		existsFile: pfs.SymlinkSupport.existsFile,
 		readFile: fs.promises.readFile
 	};
 	if (isWindows) {
-		return detectAvailableWindowsProfiles(configuredProfilesOnly, fsProvider, logService, config?.useWslProfiles, config?.profiles.windows, variableResolver, workspaceFolder);
+		return detectAvailableWindowsProfiles(
+			configuredProfilesOnly,
+			fsProvider,
+			logService,
+			safeConfigProvider(TerminalSettingId.UseWslProfiles) || true,
+			safeConfigProvider(TerminalSettingId.ProfilesWindows),
+			variableResolver,
+			workspaceFolder
+		);
 	}
-	return detectAvailableUnixProfiles(fsProvider, logService, configuredProfilesOnly, isMacintosh ? config?.profiles.osx : config?.profiles.linux, testPaths, variableResolver, workspaceFolder);
+	return detectAvailableUnixProfiles(
+		fsProvider,
+		logService,
+		configuredProfilesOnly,
+		safeConfigProvider(isMacintosh ? TerminalSettingId.ProfilesMacOs : TerminalSettingId.ProfilesLinux),
+		testPaths,
+		variableResolver,
+		workspaceFolder
+	);
 }
 
 async function detectAvailableWindowsProfiles(configuredProfilesOnly: boolean, fsProvider: IFsProvider, logService?: ILogService, useWslProfiles?: boolean, configProfiles?: { [key: string]: ITerminalProfileObject }, variableResolver?: ExtHostVariableResolverService, workspaceFolder?: IWorkspaceFolder): Promise<ITerminalProfile[]> {
@@ -185,7 +201,7 @@ async function getWslProfiles(wslPath: string, useWslProfiles?: boolean): Promis
 		if (distroOutput) {
 			const regex = new RegExp(/[\r?\n]/);
 			const distroNames = distroOutput.split(regex).filter(t => t.trim().length > 0 && t !== '');
-			for (let distroName of distroNames) {
+			for (const distroName of distroNames) {
 				// Skip empty lines
 				if (distroName === '') {
 					continue;

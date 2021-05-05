@@ -86,6 +86,7 @@ import { ExtHostEditorTabs } from 'vs/workbench/api/common/extHostEditorTabs';
 import { IExtHostTelemetry } from 'vs/workbench/api/common/extHostTelemetry';
 import { ExtHostNotebookKernels } from 'vs/workbench/api/common/extHostNotebookKernels';
 import { RemoteTrustOption } from 'vs/platform/remote/common/remoteAuthorityResolver';
+import { TextSearchCompleteMessageType } from 'vs/workbench/services/search/common/searchExtTypes';
 
 export interface IExtensionApiFactory {
 	(extension: IExtensionDescription, registry: ExtensionDescriptionRegistry, configProvider: ExtHostConfigProvider): typeof vscode;
@@ -355,9 +356,9 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			createTestItem<T>(options: vscode.TestItemOptions, data?: T) {
 				return new extHostTypes.TestItemImpl(options.id, options.label, options.uri, data);
 			},
-			createTestRunTask(request, name, persist) {
+			createTestRun(request, name, persist) {
 				checkProposedApiEnabled(extension);
-				return extHostTesting.createTestRunTask(extension.identifier.value, request, name, persist);
+				return extHostTesting.createTestRun(extension.identifier.value, request, name, persist);
 			},
 			get onDidChangeTestResults() {
 				checkProposedApiEnabled(extension);
@@ -368,6 +369,9 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 				return extHostTesting.results;
 			},
 		};
+
+		// todo@connor4312: backwards compatibility for a short period
+		(test as any).createTestRunTask = test.createTestRun;
 
 		// namespace: extensions
 		const extensions: typeof vscode.extensions = {
@@ -497,9 +501,9 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 				checkProposedApiEnabled(extension);
 				return extHostLanguages.tokenAtPosition(doc, pos);
 			},
-			registerInlineHintsProvider(selector: vscode.DocumentSelector, provider: vscode.InlineHintsProvider): vscode.Disposable {
+			registerInlayHintsProvider(selector: vscode.DocumentSelector, provider: vscode.InlayHintsProvider): vscode.Disposable {
 				checkProposedApiEnabled(extension);
-				return extHostLanguageFeatures.registerInlineHintsProvider(extension, selector, provider);
+				return extHostLanguageFeatures.registerInlayHintsProvider(extension, selector, provider);
 			}
 		};
 
@@ -638,9 +642,6 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 				if (typeof nameOrOptions === 'object') {
 					if ('pty' in nameOrOptions) {
 						return extHostTerminalService.createExtensionTerminal(nameOrOptions);
-					}
-					if (nameOrOptions.message) {
-						checkProposedApiEnabled(extension);
 					}
 					if (nameOrOptions.icon) {
 						checkProposedApiEnabled(extension);
@@ -1054,7 +1055,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			},
 			get notebookDocuments(): vscode.NotebookDocument[] {
 				checkProposedApiEnabled(extension);
-				return extHostNotebook.notebookDocuments.map(d => d.notebookDocument);
+				return extHostNotebook.notebookDocuments.map(d => d.apiNotebook);
 			},
 			registerNotebookSerializer(viewType, serializer, options) {
 				checkProposedApiEnabled(extension);
@@ -1100,9 +1101,9 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 				checkProposedApiEnabled(extension);
 				return extHostNotebook.createNotebookCellExecution(uri, index, kernelId);
 			},
-			createNotebookController(id, selector, label, executeHandler, preloads) {
+			createNotebookController(id, viewType, label, executeHandler, preloads) {
 				checkProposedApiEnabled(extension);
-				return extHostNotebookKernels.createNotebookController(extension, id, selector, label, executeHandler, preloads);
+				return extHostNotebookKernels.createNotebookController(extension, id, viewType, label, executeHandler, preloads);
 			}
 		};
 
@@ -1232,8 +1233,8 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			ViewColumn: extHostTypes.ViewColumn,
 			WorkspaceEdit: extHostTypes.WorkspaceEdit,
 			// proposed api types
-			InlineHint: extHostTypes.InlineHint,
-			InlineHintKind: extHostTypes.InlineHintKind,
+			InlayHint: extHostTypes.InlayHint,
+			InlayHintKind: extHostTypes.InlayHintKind,
 			RemoteAuthorityResolverError: extHostTypes.RemoteAuthorityResolverError,
 			RemoteTrustOption: RemoteTrustOption,
 			ResolvedAuthority: extHostTypes.ResolvedAuthority,
@@ -1247,15 +1248,18 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			NotebookCellMetadata: extHostTypes.NotebookCellMetadata,
 			NotebookCellData: extHostTypes.NotebookCellData,
 			NotebookData: extHostTypes.NotebookData,
+			NotebookKernelPreload: extHostTypes.NotebookKernelPreload,
 			NotebookCellStatusBarAlignment: extHostTypes.NotebookCellStatusBarAlignment,
 			NotebookEditorRevealType: extHostTypes.NotebookEditorRevealType,
 			NotebookCellOutput: extHostTypes.NotebookCellOutput,
 			NotebookCellOutputItem: extHostTypes.NotebookCellOutputItem,
 			NotebookCellStatusBarItem: extHostTypes.NotebookCellStatusBarItem,
+			NotebookControllerAffinity: extHostTypes.NotebookControllerAffinity,
 			LinkedEditingRanges: extHostTypes.LinkedEditingRanges,
 			TestItemStatus: extHostTypes.TestItemStatus,
 			TestResultState: extHostTypes.TestResultState,
 			TestMessage: extHostTypes.TestMessage,
+			TextSearchCompleteMessageType: TextSearchCompleteMessageType,
 			TestMessageSeverity: extHostTypes.TestMessageSeverity,
 			WorkspaceTrustState: extHostTypes.WorkspaceTrustState
 		};

@@ -66,7 +66,7 @@ export const STOP_LABEL = nls.localize('stop', "Stop");
 export const CONTINUE_LABEL = nls.localize('continueDebug', "Continue");
 export const FOCUS_SESSION_LABEL = nls.localize('focusSession', "Focus Session");
 export const SELECT_AND_START_LABEL = nls.localize('selectAndStartDebugging', "Select and Start Debugging");
-export const DEBUG_CONFIGURE_LABEL = nls.localize('openLaunchJson', "Open {0}", 'launch.json');
+export const DEBUG_CONFIGURE_LABEL = nls.localize('openLaunchJson', "Open '{0}'", 'launch.json');
 export const DEBUG_START_LABEL = nls.localize('startDebug', "Start Debugging");
 export const DEBUG_RUN_LABEL = nls.localize('startWithoutDebugging', "Start Without Debugging");
 
@@ -219,6 +219,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	when: CONTEXT_IN_DEBUG_MODE,
 	handler: async (accessor: ServicesAccessor, _: string, context: CallStackContext | unknown) => {
 		const debugService = accessor.get(IDebugService);
+		const configurationService = accessor.get(IConfigurationService);
 		let session: IDebugSession | undefined;
 		if (isSessionContext(context)) {
 			session = debugService.getModel().getSession(context.sessionId);
@@ -230,6 +231,11 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 			const { launch, name } = debugService.getConfigurationManager().selectedConfiguration;
 			await debugService.startDebugging(launch, name, { noDebug: false });
 		} else {
+			const showSubSessions = configurationService.getValue<IDebugConfiguration>('debug').showSubSessionsInToolBar;
+			// Stop should be sent to the root parent session
+			while (!showSubSessions && session && session.parentSession) {
+				session = session.parentSession;
+			}
 			session.removeReplExpressions();
 			await debugService.restartSession(session);
 		}
@@ -554,7 +560,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	handler: async (accessor, query: string) => {
 		const viewletService = accessor.get(IViewletService);
 		const viewlet = (await viewletService.openViewlet(EXTENSIONS_VIEWLET_ID, true))?.getViewPaneContainer() as IExtensionsViewPaneContainer;
-		let searchFor = `tag:debuggers @sort:installs`;
+		let searchFor = `@category:debuggers`;
 		if (typeof query === 'string') {
 			searchFor += ` ${query}`;
 		}

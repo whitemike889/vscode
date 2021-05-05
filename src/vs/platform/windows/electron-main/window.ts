@@ -183,7 +183,9 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 				title: this.productService.nameLong,
 				webPreferences: {
 					preload: FileAccess.asFileUri('vs/base/parts/sandbox/electron-browser/preload.js', require).fsPath,
-					additionalArguments: [`--vscode-window-config=${this.configObjectUrl.resource.toString()}`],
+					additionalArguments: this.environmentMainService.sandbox ?
+						[`--vscode-window-config=${this.configObjectUrl.resource.toString()}`, '--context-isolation' /* TODO@bpasero: Use process.contextIsolateed when 13-x-y is adopted (https://github.com/electron/electron/pull/28030) */] :
+						[`--vscode-window-config=${this.configObjectUrl.resource.toString()}`],
 					v8CacheOptions: browserCodeLoadingCacheStrategy,
 					enableWebSQL: false,
 					enableRemoteModule: false,
@@ -422,6 +424,15 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 		this._win.webContents.on('render-process-gone', (event, details) => this.onWindowError(WindowError.CRASHED, details));
 		this._win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => this.onWindowError(WindowError.LOAD, errorDescription));
 
+		// Prevent windows/iframes from blocking the unload
+		// through DOM events. We have our own logic for
+		// unloading a window that should not be confused
+		// with the DOM way.
+		// (https://github.com/microsoft/vscode/issues/122736)
+		this._win.webContents.on('will-prevent-unload', event => {
+			event.preventDefault();
+		});
+
 		// Window close
 		this._win.on('closed', () => {
 			this._onDidClose.fire();
@@ -430,7 +441,7 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 		});
 
 		// Block all SVG requests from unsupported origins
-		const supportedSvgSchemes = new Set([Schemas.file, Schemas.vscodeFileResource, Schemas.vscodeRemoteResource, 'devtools']); // TODO: handle webview origin
+		const supportedSvgSchemes = new Set([Schemas.file, Schemas.vscodeFileResource, Schemas.vscodeRemoteResource, 'devtools']); // TODO@mjbvz: handle webview origin
 
 		// But allow them if the are made from inside an webview
 		const isSafeFrame = (requestFrame: WebFrameMain | undefined): boolean => {
@@ -563,7 +574,7 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 
 		switch (type) {
 			case WindowError.CRASHED:
-				this.logService.error(`CodeWindow: renderer process crashed (detail: ${typeof details === 'string' ? details : details?.reason})`);
+				this.logService.error(`CodeWindow: renderer process crashed (detail: ${typeof details === 'string' ? details : details?.reason}, code: ${typeof details === 'string' ? '<unknown>' : details?.exitCode ?? '<unknown>'})`);
 				break;
 			case WindowError.UNRESPONSIVE:
 				this.logService.error('CodeWindow: detected unresponsive');
@@ -657,8 +668,8 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 	}
 
 	private destroyWindow(): void {
-		this._onDidDestroy.fire(); // 'close' event will not be fired on destroy(), so signal crash via explicit event
-		this._win.destroy(); 	// make sure to destroy the window as it has crashed
+		this._onDidDestroy.fire(); 	// 'close' event will not be fired on destroy(), so signal crash via explicit event
+		this._win.destroy(); 		// make sure to destroy the window as it has crashed
 	}
 
 	private onDidDeleteUntitledWorkspace(workspace: IWorkspaceIdentifier): void {

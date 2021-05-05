@@ -18,13 +18,14 @@ import { ModelDecorationOptions } from 'vs/editor/common/model/textModel';
 import { WorkspaceTextEdit } from 'vs/editor/common/modes';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IUndoRedoService } from 'vs/platform/undoRedo/common/undoRedo';
-import { CellEditState, CellFindMatch, ICellViewModel, NotebookLayoutInfo, INotebookDeltaDecoration, INotebookDeltaCellStatusBarItems, CellFocusMode } from 'vs/workbench/contrib/notebook/browser/notebookBrowser';
+import { CellEditState, CellFindMatch, ICellViewModel, NotebookLayoutInfo, INotebookDeltaDecoration, INotebookDeltaCellStatusBarItems, CellFocusMode, CellFindMatchWithIndex } from 'vs/workbench/contrib/notebook/browser/notebookBrowser';
 import { CodeCellViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/codeCellViewModel';
 import { NotebookEventDispatcher, NotebookMetadataChangedEvent } from 'vs/workbench/contrib/notebook/browser/viewModel/eventDispatcher';
 import { CellFoldingState, EditorFoldingStateDelegate } from 'vs/workbench/contrib/notebook/browser/contrib/fold/foldingModel';
 import { MarkdownCellViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/markdownCellViewModel';
 import { NotebookCellTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookCellTextModel';
-import { CellKind, NotebookCellMetadata, INotebookSearchOptions, ICellRange, NotebookCellsChangeType, ICell, NotebookCellTextModelSplice, CellEditType, IOutputDto, SelectionStateType, ISelectionState, cellIndexesToRanges, cellRangesToIndexes, reduceRanges } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { CellKind, NotebookCellMetadata, INotebookSearchOptions, NotebookCellsChangeType, ICell, NotebookCellTextModelSplice, CellEditType, IOutputDto, SelectionStateType, ISelectionState } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { ICellRange, cellIndexesToRanges, cellRangesToIndexes, reduceRanges } from 'vs/workbench/contrib/notebook/common/notebookRange';
 import { FoldingRegions } from 'vs/editor/contrib/folding/foldingRanges';
 import { NotebookTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookTextModel';
 import { MarkdownRenderer } from 'vs/editor/browser/core/markdownRenderer';
@@ -34,6 +35,7 @@ import { MultiModelEditStackElement, SingleModelEditStackElement } from 'vs/edit
 import { ResourceNotebookCellEdit } from 'vs/workbench/contrib/bulkEdit/browser/bulkCellEdits';
 import { NotebookCellSelectionCollection } from 'vs/workbench/contrib/notebook/browser/viewModel/cellSelectionCollection';
 import { ITextModelService } from 'vs/editor/common/services/resolverService';
+import { groupByNumber } from 'vs/base/common/collections';
 
 export interface INotebookEditorViewState {
 	editingCells: { [key: number]: boolean };
@@ -499,14 +501,6 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 		return this._hiddenRanges;
 	}
 
-	hide() {
-		this._viewCells.forEach(cell => {
-			if (cell.getText() !== '') {
-				cell.editState = CellEditState.Preview;
-			}
-		});
-	}
-
 	getCellByHandle(handle: number) {
 		return this._handleToViewCellMapping.get(handle);
 	}
@@ -739,25 +733,24 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 	}
 
 	deltaCellStatusBarItems(oldItems: string[], newItems: INotebookDeltaCellStatusBarItems[]): string[] {
-		oldItems.forEach(id => {
-			const handle = this._statusBarItemIdToCellMap.get(id);
-
-			if (handle !== undefined) {
-				const cell = this.getCellByHandle(handle);
-				cell?.deltaCellStatusBarItems([id], []);
-			}
-		});
+		const deletesByHandle = groupByNumber(oldItems, id => this._statusBarItemIdToCellMap.get(id) ?? -1);
 
 		const result: string[] = [];
-
 		newItems.forEach(itemDelta => {
 			const cell = this.getCellByHandle(itemDelta.handle);
-			const ret = cell?.deltaCellStatusBarItems([], itemDelta.items) || [];
+			const deleted = deletesByHandle.get(itemDelta.handle) ?? [];
+			deletesByHandle.delete(itemDelta.handle);
+			const ret = cell?.deltaCellStatusBarItems(deleted, itemDelta.items) || [];
 			ret.forEach(id => {
 				this._statusBarItemIdToCellMap.set(id, itemDelta.handle);
 			});
 
 			result.push(...ret);
+		});
+
+		deletesByHandle.forEach((ids, handle) => {
+			const cell = this.getCellByHandle(handle);
+			cell?.deltaCellStatusBarItems(ids, []);
 		});
 
 		return result;
@@ -918,10 +911,6 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 			return null;
 		}
 
-		if (!cell.getEvaluatedMetadata(this.notebookDocument.metadata).editable) {
-			return null;
-		}
-
 		const splitPoints = cell.focusMode === CellFocusMode.Container ? [{ lineNumber: 1, column: 1 }] : cell.getSelectionsStartPosition();
 
 		if (splitPoints && splitPoints.length > 0) {
@@ -966,7 +955,7 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 	getEditorViewState(): INotebookEditorViewState {
 		const editingCells: { [key: number]: boolean } = {};
 		this._viewCells.forEach((cell, i) => {
-			if (cell.editState === CellEditState.Editing) {
+			if (cell.getEditState() === CellEditState.Editing) {
 				editingCells[i] = true;
 			}
 		});
@@ -992,7 +981,7 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 			const isEditing = viewState.editingCells && viewState.editingCells[index];
 			const editorViewState = viewState.editorViewStates && viewState.editorViewStates[index];
 
-			cell.editState = isEditing ? CellEditState.Editing : CellEditState.Preview;
+			cell.updateEditState(isEditing ? CellEditState.Editing : CellEditState.Preview, 'viewState');
 			const cellHeight = viewState.cellTotalHeights ? viewState.cellTotalHeights[index] : undefined;
 			cell.restoreEditorViewState(editorViewState, cellHeight);
 		});
@@ -1074,12 +1063,16 @@ export class NotebookViewModel extends Disposable implements EditorFoldingStateD
 	 * Search in notebook text model
 	 * @param value
 	 */
-	find(value: string, options: INotebookSearchOptions): CellFindMatch[] {
-		const matches: CellFindMatch[] = [];
-		this._viewCells.forEach(cell => {
+	find(value: string, options: INotebookSearchOptions): CellFindMatchWithIndex[] {
+		const matches: CellFindMatchWithIndex[] = [];
+		this._viewCells.forEach((cell, index) => {
 			const cellMatches = cell.startFind(value, options);
 			if (cellMatches) {
-				matches.push(cellMatches);
+				matches.push({
+					cell: cellMatches.cell,
+					index: index,
+					matches: cellMatches.matches
+				});
 			}
 		});
 

@@ -212,10 +212,16 @@ export abstract class BaseWebview<T extends HTMLElement> extends Disposable {
 
 		this._register(this.on(WebviewMessageChannels.loadResource, (entry: { id: number, path: string, query: string, ifNoneMatch?: string }) => {
 			const rawPath = entry.path;
-			const normalizedPath = decodeURIComponent(rawPath);
-			const uri = URI.parse(normalizedPath.replace(/^\/([\w\-]+)\/(.+)$/, (_, scheme, path) => scheme + ':/' + path)).with({
+			const uri = URI.parse(rawPath.replace(/^\/([\w\-]+)(\/{1,2})/, (_: string, scheme: string, sep: string) => {
+				if (sep.length === 1) {
+					return `${scheme}:///`; // Add empty authority.
+				} else {
+					return `${scheme}://`; // Url has own authority.
+				}
+			})).with({
 				query: decodeURIComponent(entry.query),
 			});
+
 			this.loadResource(entry.id, rawPath, uri, entry.ifNoneMatch);
 		}));
 
@@ -366,8 +372,11 @@ export abstract class BaseWebview<T extends HTMLElement> extends Disposable {
 		});
 	}
 
-	public set localResourcesRoot(resources: URI[]) {
-		/** no op */
+	public set localResourcesRoot(resources: readonly URI[]) {
+		this.content = {
+			...this.content,
+			options: { ...this.content.options, localResourceRoots: resources }
+		};
 	}
 
 	public set state(state: string | undefined) {
@@ -479,6 +488,7 @@ export abstract class BaseWebview<T extends HTMLElement> extends Disposable {
 				extensionLocation: this.extension?.location,
 				roots: this.content.options.localResourceRoots || [],
 				remoteConnectionData,
+				useRootAuthority: this.content.options.useRootAuthority
 			}, this._fileService, this._requestService, this._logService, this._resourceLoadingCts.token);
 
 			switch (result.type) {

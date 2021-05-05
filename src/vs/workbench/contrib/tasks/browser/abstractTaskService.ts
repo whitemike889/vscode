@@ -30,7 +30,6 @@ import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storag
 import { IProgressService, IProgressOptions, ProgressLocation } from 'vs/platform/progress/common/progress';
 
 import { IOpenerService } from 'vs/platform/opener/common/opener';
-import { IHostService } from 'vs/workbench/services/host/browser/host';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
 
@@ -81,7 +80,7 @@ import { isWorkspaceFolder, TaskQuickPickEntry, QUICKOPEN_DETAIL_CONFIG, TaskQui
 import { ILogService } from 'vs/platform/log/common/log';
 import { once } from 'vs/base/common/functional';
 import { ThemeIcon } from 'vs/platform/theme/common/themeService';
-import { IWorkspaceTrustRequestService } from 'vs/platform/workspace/common/workspaceTrust';
+import { IWorkspaceTrustManagementService, IWorkspaceTrustRequestService } from 'vs/platform/workspace/common/workspaceTrust';
 import { VirtualWorkspaceContext } from 'vs/workbench/browser/contextkeys';
 
 const QUICKOPEN_HISTORY_LIMIT_CONFIG = 'task.quickOpen.history';
@@ -136,6 +135,11 @@ export interface WorkspaceFolderConfigurationResult {
 
 interface TaskCustomizationTelemetryEvent {
 	properties: string[];
+}
+
+interface CommandUpgrade {
+	command?: string;
+	args?: string[];
 }
 
 class TaskMap {
@@ -248,7 +252,6 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 		@IStorageService private readonly storageService: IStorageService,
 		@IProgressService private readonly progressService: IProgressService,
 		@IOpenerService private readonly openerService: IOpenerService,
-		@IHostService private readonly _hostService: IHostService,
 		@IDialogService protected readonly dialogService: IDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IContextKeyService protected readonly contextKeyService: IContextKeyService,
@@ -259,6 +262,7 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 		@IPreferencesService private readonly preferencesService: IPreferencesService,
 		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
 		@IWorkspaceTrustRequestService private readonly workspaceTrustRequestService: IWorkspaceTrustRequestService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@ILogService private readonly logService: ILogService
 	) {
 		super();
@@ -276,24 +280,8 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 			}
 			let folderSetup = this.computeWorkspaceFolderSetup();
 			if (this.executionEngine !== folderSetup[2]) {
-				if (this._taskSystem && this._taskSystem.getActiveTasks().length > 0) {
-					this.notificationService.prompt(
-						Severity.Info,
-						nls.localize(
-							'TaskSystem.noHotSwap',
-							'Changing the task execution engine with an active task running requires to reload the Window'
-						),
-						[{
-							label: nls.localize('reloadWindow', "Reload Window"),
-							run: () => this._hostService.reload()
-						}],
-						{ sticky: true }
-					);
-					return;
-				} else {
-					this.disposeTaskSystemListeners();
-					this._taskSystem = undefined;
-				}
+				this.disposeTaskSystemListeners();
+				this._taskSystem = undefined;
 			}
 			this.updateSetup(folderSetup);
 			this.updateWorkspaceTasks();
@@ -947,7 +935,7 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 		}).then((value) => {
 			if (runSource === TaskRunSource.User) {
 				this.getWorkspaceTasks().then(workspaceTasks => {
-					RunAutomaticTasks.promptForPermission(this, this.storageService, this.notificationService, this.workspaceTrustRequestService, this.openerService, workspaceTasks);
+					RunAutomaticTasks.promptForPermission(this, this.storageService, this.notificationService, this.workspaceTrustManagementService, this.openerService, workspaceTasks);
 				});
 			}
 			return value;
@@ -2461,7 +2449,6 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 	private async trust(): Promise<boolean> {
 		return (await this.workspaceTrustRequestService.requestWorkspaceTrust(
 			{
-				modal: true,
 				message: nls.localize('TaskService.requestTrust', "Listing and running tasks requires that some of the files in this workspace be executed as code.")
 			})) === true;
 	}
@@ -3152,11 +3139,24 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 		if (!this.canRunCommand()) {
 			return;
 		}
-		const activeTasks: Task[] = await this.getActiveTasks();
+		const activeTasksPromise: Promise<Task[]> = this.getActiveTasks();
+		const activeTasks: Task[] = await activeTasksPromise;
+		let group: string | undefined;
 		if (activeTasks.length === 1) {
 			this._taskSystem!.revealTask(activeTasks[0]);
+		} else if (activeTasks.every((task) => {
+			if (InMemoryTask.is(task)) {
+				return false;
+			}
+
+			if (!group) {
+				group = task.command.presentation?.group;
+			}
+			return task.command.presentation?.group && (task.command.presentation.group === group);
+		})) {
+			this._taskSystem!.revealTask(activeTasks[0]);
 		} else {
-			this.showQuickPick(this.getActiveTasks(),
+			this.showQuickPick(activeTasksPromise,
 				nls.localize('TaskService.pickShowTask', 'Select the task to show its output'),
 				{
 					label: nls.localize('TaskService.noTaskIsRunning', 'No task is running'),
@@ -3173,55 +3173,103 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 		}
 	}
 
-	private async upgrade(): Promise<void> {
-		if (this.executionEngine !== ExecutionEngine.Process) {
+	private async createTasksDotOld(folder: IWorkspaceFolder): Promise<[URI, URI] | undefined> {
+		const tasksFile = folder.toResource('.vscode/tasks.json');
+		if (await this.fileService.exists(tasksFile)) {
+			const oldFile = tasksFile.with({ path: `${tasksFile.path}.old` });
+			await this.fileService.copy(tasksFile, oldFile, true);
+			return [oldFile, tasksFile];
+		}
+		return undefined;
+	}
+
+	private upgradeTask(task: Task, suppressTaskName: boolean, globalConfig: { windows?: CommandUpgrade, osx?: CommandUpgrade, linux?: CommandUpgrade }): TaskConfig.CustomTask | TaskConfig.ConfiguringTask | undefined {
+		if (!CustomTask.is(task)) {
 			return;
 		}
+		const configElement: any = {
+			label: task._label
+		};
+		const oldTaskTypes = new Set(['gulp', 'jake', 'grunt']);
+		if (Types.isString(task.command.name) && oldTaskTypes.has(task.command.name)) {
+			configElement.type = task.command.name;
+			configElement.task = task.command.args![0];
+		} else {
+			if (task.command.runtime === RuntimeType.Shell) {
+				configElement.type = RuntimeType.toString(RuntimeType.Shell);
+			}
+			if (task.command.name && !suppressTaskName && !globalConfig.windows?.command && !globalConfig.osx?.command && !globalConfig.linux?.command) {
+				configElement.command = task.command.name;
+			} else if (suppressTaskName) {
+				configElement.command = task._source.config.element.command;
+			}
+			if (task.command.args && (!Types.isArray(task.command.args) || (task.command.args.length > 0))) {
+				if (!globalConfig.windows?.args && !globalConfig.osx?.args && !globalConfig.linux?.args) {
+					configElement.args = task.command.args;
+				} else {
+					configElement.args = task._source.config.element.args;
+				}
+			}
+		}
+
+		if (task.configurationProperties.presentation) {
+			configElement.presentation = task.configurationProperties.presentation;
+		}
+		if (task.configurationProperties.isBackground) {
+			configElement.isBackground = task.configurationProperties.isBackground;
+		}
+		if (task.configurationProperties.problemMatchers) {
+			configElement.problemMatcher = task._source.config.element.problemMatcher;
+		}
+		if (task.configurationProperties.group) {
+			configElement.group = task.configurationProperties.group;
+		}
+
+		task._source.config.element = configElement;
+		const tempTask = new CustomTask(task._id, task._source, task._label, task.type, task.command, task.hasDefinedMatchers, task.runOptions, task.configurationProperties);
+		const configTask = this.createCustomizableTask(tempTask);
+		if (configTask) {
+			return configTask;
+		}
+		return;
+	}
+
+	private async upgrade(): Promise<void> {
+		if (this.schemaVersion === JsonSchemaVersion.V2_0_0) {
+			return;
+		}
+
+		if (!this.workspaceTrustManagementService.isWorkpaceTrusted()) {
+			this._register(Event.once(this.workspaceTrustManagementService.onDidChangeTrust)(isTrusted => {
+				if (isTrusted) {
+					this.upgrade();
+				}
+			}));
+			return;
+		}
+
 		const tasks = await this.getGroupedTasks();
-		const allTasks: (CustomTask | ConfiguringTask)[] = [];
+		const fileDiffs: [URI, URI][] = [];
 		for (const folder of this.workspaceFolders) {
+			const diff = await this.createTasksDotOld(folder);
+			if (diff) {
+				fileDiffs.push(diff);
+			}
+			if (!diff) {
+				continue;
+			}
+
 			const configTasks: (TaskConfig.CustomTask | TaskConfig.ConfiguringTask)[] = [];
+			const suppressTaskName = !!this.configurationService.getValue('tasks.suppressTaskName', { resource: folder.uri });
+			const globalConfig = {
+				windows: <CommandUpgrade>this.configurationService.getValue('tasks.windows', { resource: folder.uri }),
+				osx: <CommandUpgrade>this.configurationService.getValue('tasks.osx', { resource: folder.uri }),
+				linux: <CommandUpgrade>this.configurationService.getValue('tasks.linux', { resource: folder.uri })
+			};
 			tasks.get(folder).forEach(task => {
-				if (CustomTask.is(task)) {
-					const configElement: any = {
-						label: task._label
-					};
-					const oldTaskTypes = new Set(['gulp', 'jake', 'grunt']);
-					if (Types.isString(task.command.name) && oldTaskTypes.has(task.command.name)) {
-						configElement.type = task.command.name;
-						configElement.task = task.command.args![0];
-					} else {
-						if (task.command.runtime === RuntimeType.Shell) {
-							configElement.type = RuntimeType.toString(RuntimeType.Shell);
-						}
-						if (task.command.name) {
-							configElement.command = task.command.name;
-						}
-						if (task.command.args) {
-							configElement.args = task.command.args;
-						}
-					}
-
-					if (task.configurationProperties.presentation) {
-						configElement.presentation = task.configurationProperties.presentation;
-					}
-					if (task.configurationProperties.isBackground) {
-						configElement.isBackground = task.configurationProperties.isBackground;
-					}
-					if (task.configurationProperties.problemMatchers) {
-						configElement.problemMatcher = task._source.config.element.problemMatcher;
-					}
-					if (task.configurationProperties.group) {
-						configElement.group = task.configurationProperties.group;
-					}
-
-					task._source.config.element = configElement;
-					const tempTask = new CustomTask(task._id, task._source, task._label, task.type, task.command, task.hasDefinedMatchers, task.runOptions, task.configurationProperties);
-					allTasks.push(tempTask);
-					const configTask = this.createCustomizableTask(tempTask);
-					if (configTask) {
-						configTasks.push(configTask);
-					}
+				const configTask = this.upgradeTask(task, suppressTaskName, globalConfig);
+				if (configTask) {
+					configTasks.push(configTask);
 				}
 			});
 			this._taskSystem = undefined;
@@ -3237,16 +3285,24 @@ export abstract class AbstractTaskService extends Disposable implements ITaskSer
 			if (this.configurationService.getValue('tasks.suppressTaskName', { resource: folder.uri })) {
 				await this.configurationService.updateValue('tasks.suppressTaskName', undefined, { resource: folder.uri });
 			}
-			this.updateSetup();
 		}
+		this.updateSetup();
 
 		this.notificationService.prompt(Severity.Warning,
-			nls.localize('taskService.upgradeVersion', "The deprecated tasks version 0.1.0 has been removed. Your tasks have been upgraded to version 2.0.0. Please check for errors in your tasks.json."),
+			fileDiffs.length === 1 ?
+				nls.localize('taskService.upgradeVersion', "The deprecated tasks version 0.1.0 has been removed. Your tasks have been upgraded to version 2.0.0. Open the diff to review the upgrade.")
+				: nls.localize('taskService.upgradeVersionPlural', "The deprecated tasks version 0.1.0 has been removed. Your tasks have been upgraded to version 2.0.0. Open the diffs to review the upgrade."),
 			[{
-				label: nls.localize('taskService.upgradeOpen', "Open tasks.json"),
-				run: () => {
-					this.openConfig(allTasks[0]);
+				label: fileDiffs.length === 1 ? nls.localize('taskService.openDiff', "Open diff") : nls.localize('taskService.openDiffs', "Open diffs"),
+				run: async () => {
+					for (const upgrade of fileDiffs) {
+						await this.editorService.openEditor({
+							leftResource: upgrade[0],
+							rightResource: upgrade[1],
+						});
+					}
 				}
-			}]);
+			}]
+		);
 	}
 }

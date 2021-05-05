@@ -17,6 +17,7 @@ import { URI } from 'vs/base/common/uri';
 import { localize } from 'vs/nls';
 import { WindowsShellHelper } from 'vs/platform/terminal/node/windowsShellHelper';
 import { IProcessEnvironment, isLinux, isMacintosh, isWindows } from 'vs/base/common/platform';
+import { timeout } from 'vs/base/common/async';
 
 // Writing large amounts of data can be corrupted for some reason, after looking into this is
 // appears to be a race condition around writing to the FD which may be based on how powerful the
@@ -44,6 +45,23 @@ const enum ShutdownConstants {
 	MaximumShutdownTime = 5000
 }
 
+const enum Constants {
+	/**
+	 * The minimum duration between kill and spawn calls on Windows/conpty as a mitigation for a
+	 * hang issue. See:
+	 * - https://github.com/microsoft/vscode/issues/71966
+	 * - https://github.com/microsoft/vscode/issues/117956
+	 * - https://github.com/microsoft/vscode/issues/121336
+	 */
+	KillSpawnThrottleInterval = 250,
+	/**
+	 * The amount of time to wait when a call is throttles beyond the exact amount, this is used to
+	 * try prevent early timeouts causing a kill/spawn call to happen at double the regular
+	 * interval.
+	 */
+	KillSpawnSpacingDuration = 50,
+}
+
 interface IWriteObject {
 	data: string,
 	isBinary: boolean
@@ -52,6 +70,8 @@ interface IWriteObject {
 export class TerminalProcess extends Disposable implements ITerminalChildProcess {
 	readonly id = 0;
 	readonly shouldPersist = false;
+
+	private static _lastKillOrStart = 0;
 
 	private _exitCode: number | undefined;
 	private _exitMessage: string | undefined;
@@ -70,21 +90,21 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 
 	private _isPtyPaused: boolean = false;
 	private _unacknowledgedCharCount: number = 0;
-	public get exitMessage(): string | undefined { return this._exitMessage; }
+	get exitMessage(): string | undefined { return this._exitMessage; }
 
-	public get currentTitle(): string { return this._windowsShellHelper?.shellTitle || this._currentTitle; }
-	public get shellType(): TerminalShellType { return this._windowsShellHelper ? this._windowsShellHelper.shellType : undefined; }
+	get currentTitle(): string { return this._windowsShellHelper?.shellTitle || this._currentTitle; }
+	get shellType(): TerminalShellType { return this._windowsShellHelper ? this._windowsShellHelper.shellType : undefined; }
 
 	private readonly _onProcessData = this._register(new Emitter<string>());
-	public get onProcessData(): Event<string> { return this._onProcessData.event; }
+	get onProcessData(): Event<string> { return this._onProcessData.event; }
 	private readonly _onProcessExit = this._register(new Emitter<number>());
-	public get onProcessExit(): Event<number> { return this._onProcessExit.event; }
+	get onProcessExit(): Event<number> { return this._onProcessExit.event; }
 	private readonly _onProcessReady = this._register(new Emitter<{ pid: number, cwd: string }>());
-	public get onProcessReady(): Event<{ pid: number, cwd: string }> { return this._onProcessReady.event; }
+	get onProcessReady(): Event<{ pid: number, cwd: string }> { return this._onProcessReady.event; }
 	private readonly _onProcessTitleChanged = this._register(new Emitter<string>());
-	public get onProcessTitleChanged(): Event<string> { return this._onProcessTitleChanged.event; }
+	get onProcessTitleChanged(): Event<string> { return this._onProcessTitleChanged.event; }
 	private readonly _onProcessShellTypeChanged = this._register(new Emitter<TerminalShellType>());
-	public readonly onProcessShellTypeChanged = this._onProcessShellTypeChanged.event;
+	readonly onProcessShellTypeChanged = this._onProcessShellTypeChanged.event;
 
 	constructor(
 		private readonly _shellLaunchConfig: IShellLaunchConfig,
@@ -144,7 +164,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 	onProcessOverrideDimensions?: Event<ITerminalDimensionsOverride | undefined> | undefined;
 	onProcessResolvedShellLaunchConfig?: Event<IShellLaunchConfig> | undefined;
 
-	public async start(): Promise<ITerminalLaunchError | undefined> {
+	async start(): Promise<ITerminalLaunchError | undefined> {
 		const results = await Promise.all([this._validateCwd(), this._validateExecutable()]);
 		const firstError = results.find(r => r !== undefined);
 		if (firstError) {
@@ -203,6 +223,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 
 	private async setupPtyProcess(shellLaunchConfig: IShellLaunchConfig, options: pty.IPtyForkOptions): Promise<void> {
 		const args = shellLaunchConfig.args || [];
+		await this._throttleKillSpawn();
 		this._logService.trace('IPty#spawn', shellLaunchConfig.executable, args, options);
 		const ptyProcess = (await import('node-pty')).spawn(shellLaunchConfig.executable!, args, options);
 		this._ptyProcess = ptyProcess;
@@ -222,7 +243,6 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 			// Refire the data event
 			this._onProcessData.fire(data);
 			if (this._closeTimeout) {
-				clearTimeout(this._closeTimeout);
 				this._queueProcessExit();
 			}
 			this._windowsShellHelper?.checkShell();
@@ -235,7 +255,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		this._sendProcessId(ptyProcess.pid);
 	}
 
-	public override dispose(): void {
+	override dispose(): void {
 		this._isDisposed = true;
 		if (this._titleInterval) {
 			clearInterval(this._titleInterval);
@@ -280,6 +300,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		// point but we want to make sure
 		try {
 			if (this._ptyProcess) {
+				await this._throttleKillSpawn();
 				this._logService.trace('IPty#kill');
 				this._ptyProcess.kill();
 			}
@@ -288,6 +309,19 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 		this._onProcessExit.fire(this._exitCode || 0);
 		this.dispose();
+	}
+
+	private async _throttleKillSpawn(): Promise<void> {
+		// Only throttle on Windows/conpty
+		if (!isWindows || !('useConpty' in this._ptyOptions) || !this._ptyOptions.useConpty) {
+			return;
+		}
+		// Use a loop to ensure multiple calls in a single interval space out
+		while (Date.now() - TerminalProcess._lastKillOrStart < Constants.KillSpawnThrottleInterval) {
+			this._logService.trace('Throttling kill/spawn call');
+			await timeout(Constants.KillSpawnThrottleInterval - (Date.now() - TerminalProcess._lastKillOrStart) + Constants.KillSpawnSpacingDuration);
+		}
+		TerminalProcess._lastKillOrStart = Date.now();
 	}
 
 	private _sendProcessId(pid: number) {
@@ -302,8 +336,11 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		this._onProcessTitleChanged.fire(this._currentTitle);
 	}
 
-	public shutdown(immediate: boolean): void {
-		if (immediate) {
+	shutdown(immediate: boolean): void {
+		// don't force immediate disposal of the terminal processes on Windows as an additional
+		// mitigation for https://github.com/microsoft/vscode/issues/71966 which causes the pty host
+		// to become unresponsive, disconnecting all terminals across all windows.
+		if (immediate && !isWindows) {
 			this._kill();
 		} else {
 			if (!this._closeTimeout && !this._isDisposed) {
@@ -319,7 +356,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 	}
 
-	public input(data: string, isBinary?: boolean): void {
+	input(data: string, isBinary?: boolean): void {
 		if (this._isDisposed || !this._ptyProcess) {
 			return;
 		}
@@ -333,7 +370,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		this._startWrite();
 	}
 
-	public async processBinary(data: string): Promise<void> {
+	async processBinary(data: string): Promise<void> {
 		this.input(data, true);
 	}
 
@@ -367,7 +404,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 	}
 
-	public resize(cols: number, rows: number): void {
+	resize(cols: number, rows: number): void {
 		if (this._isDisposed) {
 			return;
 		}
@@ -400,7 +437,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 	}
 
-	public acknowledgeDataEvent(charCount: number): void {
+	acknowledgeDataEvent(charCount: number): void {
 		// Prevent lower than 0 to heal from errors
 		this._unacknowledgedCharCount = Math.max(this._unacknowledgedCharCount - charCount, 0);
 		this._logService.trace(`Flow control: Ack ${charCount} chars (unacknowledged: ${this._unacknowledgedCharCount})`);
@@ -411,7 +448,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 	}
 
-	public clearUnacknowledgedChars(): void {
+	clearUnacknowledgedChars(): void {
 		this._unacknowledgedCharCount = 0;
 		this._logService.trace(`Flow control: Cleared all unacknowledged chars, forcing resume`);
 		if (this._isPtyPaused) {
@@ -420,11 +457,11 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		}
 	}
 
-	public getInitialCwd(): Promise<string> {
+	getInitialCwd(): Promise<string> {
 		return Promise.resolve(this._initialCwd);
 	}
 
-	public getCwd(): Promise<string> {
+	getCwd(): Promise<string> {
 		if (isMacintosh) {
 			// Disable cwd lookup on macOS Big Sur due to spawn blocking thread (darwin v20 is macOS
 			// Big Sur) https://github.com/Microsoft/vscode/issues/105446
@@ -469,7 +506,7 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
 		});
 	}
 
-	public getLatency(): Promise<number> {
+	getLatency(): Promise<number> {
 		return Promise.resolve(0);
 	}
 }
@@ -478,12 +515,12 @@ export class TerminalProcess extends Disposable implements ITerminalChildProcess
  * Tracks the latest resize event to be trigger at a later point.
  */
 class DelayedResizer extends Disposable {
-	public rows: number | undefined;
-	public cols: number | undefined;
+	rows: number | undefined;
+	cols: number | undefined;
 	private _timeout: NodeJS.Timeout;
 
 	private readonly _onTrigger = this._register(new Emitter<{ rows?: number, cols?: number }>());
-	public get onTrigger(): Event<{ rows?: number, cols?: number }> { return this._onTrigger.event; }
+	get onTrigger(): Event<{ rows?: number, cols?: number }> { return this._onTrigger.event; }
 
 	constructor() {
 		super();

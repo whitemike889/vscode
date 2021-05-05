@@ -41,6 +41,10 @@ import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import { Workspace } from 'vs/platform/workspace/test/common/testWorkspace';
 import { IProgressService } from 'vs/platform/progress/common/progress';
+import { IWorkingCopyEditorService } from 'vs/workbench/services/workingCopy/common/workingCopyEditorService';
+import { TestWorkingCopy } from 'vs/workbench/test/common/workbenchTestServices';
+import { CancellationToken } from 'vs/base/common/cancellation';
+import { IWorkingCopyBackup } from 'vs/workbench/services/workingCopy/common/workingCopy';
 
 flakySuite('WorkingCopyBackupTracker (native)', function () {
 
@@ -59,9 +63,10 @@ flakySuite('WorkingCopyBackupTracker (native)', function () {
 			@IEditorService editorService: IEditorService,
 			@IEnvironmentService environmentService: IEnvironmentService,
 			@IProgressService progressService: IProgressService,
-			@IEditorGroupsService editorGroupService: IEditorGroupsService
+			@IEditorGroupsService editorGroupService: IEditorGroupsService,
+			@IWorkingCopyEditorService workingCopyEditorService: IWorkingCopyEditorService
 		) {
-			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, fileDialogService, dialogService, contextService, nativeHostService, logService, editorService, environmentService, progressService, editorGroupService);
+			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, fileDialogService, dialogService, contextService, nativeHostService, logService, environmentService, progressService, editorGroupService, workingCopyEditorService, editorService);
 		}
 
 		protected override getBackupScheduleDelay(): number {
@@ -284,6 +289,36 @@ flakySuite('WorkingCopyBackupTracker (native)', function () {
 		const veto = await event.value;
 		assert.ok(!veto);
 		assert.ok(!model?.isDirty());
+
+		await cleanup();
+	});
+
+	test('onWillShutdown - veto if backup fails', async function () {
+		const { accessor, cleanup } = await createTracker();
+
+		class TestBackupWorkingCopy extends TestWorkingCopy {
+
+			constructor(resource: URI) {
+				super(resource);
+
+				accessor.workingCopyService.registerWorkingCopy(this);
+			}
+
+			override async backup(token: CancellationToken): Promise<IWorkingCopyBackup> {
+				throw new Error('unable to backup');
+			}
+		}
+
+		const resource = toResource.call(this, '/path/custom.txt');
+		const customWorkingCopy = new TestBackupWorkingCopy(resource);
+		customWorkingCopy.setDirty(true);
+
+		const event = new TestBeforeShutdownEvent();
+		event.reason = ShutdownReason.QUIT;
+		accessor.lifecycleService.fireBeforeShutdown(event);
+
+		const veto = await event.value;
+		assert.ok(veto);
 
 		await cleanup();
 	});

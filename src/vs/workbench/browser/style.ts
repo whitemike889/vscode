@@ -190,6 +190,9 @@ registerThemingParticipant((theme, collector) => {
 		.monaco-action-bar:not(.vertical) .action-label:not(.disabled):hover {
 			background-color: ${toolbarHoverBackgroundColor};
 		}
+		.monaco-action-bar:not(.vertical) .monaco-dropdown-with-primary:not(.disabled):hover {
+			background-color: ${toolbarHoverBackgroundColor};
+		}
 	`);
 	}
 
@@ -206,7 +209,7 @@ registerThemingParticipant((theme, collector) => {
 	const toolbarHoverOutlineColor = theme.getColor(toolbarHoverOutline);
 	if (toolbarHoverOutlineColor) {
 		collector.addRule(`
-			.monaco-action-bar:not(.vertical) .action-item:hover .action-label:not(.disabled) {
+			.monaco-action-bar:not(.vertical) .action-item .action-label:hover:not(.disabled) {
 				outline: 1px dashed ${toolbarHoverOutlineColor};
 				outline-offset: -1px;
 			}
